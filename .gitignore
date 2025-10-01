@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Outputs
+outputs/
+
+# Local data
+.data/
+hidden-solstice-473705-q1-881cb6b97874.json
