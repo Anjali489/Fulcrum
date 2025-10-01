@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 # GCS
 from google.cloud import storage
@@ -72,6 +73,41 @@ def _require_env(name: str) -> str:
     if not val:
         raise RuntimeError(f"Missing required env var: {name}")
     return val
+
+
+def _normalize_bucket_name(value: str) -> str:
+    """Accepts a bucket identifier in various forms and returns the plain bucket name.
+
+    Supported inputs:
+    - "my-bucket"
+    - "gs://my-bucket" or "gs://my-bucket/path" (path ignored)
+    - "https://www.googleapis.com/storage/v1/b/<bucket>[/...]"
+    - "https://<bucket>.storage.googleapis.com[/...]"
+    """
+    v = (value or "").strip()
+    if not v:
+        return v
+    # gs://bucket[/...]
+    if v.startswith("gs://"):
+        return v[5:].split("/", 1)[0]
+    # http(s) URLs
+    if v.startswith("http://") or v.startswith("https://"):
+        try:
+            p = urlparse(v)
+            # Try API style: /storage/v1/b/<bucket>/...
+            parts = [seg for seg in p.path.split("/") if seg]
+            if "b" in parts:
+                i = parts.index("b")
+                if i + 1 < len(parts):
+                    return parts[i + 1]
+            # Try virtual host style: <bucket>.storage.googleapis.com
+            host = p.netloc
+            if host.endswith(".storage.googleapis.com"):
+                return host[: -len(".storage.googleapis.com")]
+        except Exception:
+            pass
+    # Fallback: assume already a bucket name
+    return v
 
 
 # -------------------- GCS utils --------------------
@@ -305,8 +341,16 @@ def _source_meta(blob, bucket_name: str) -> Dict[str, Any]:
 
 
 def run_ingestion():
-    source_bucket = _require_env("GCS_SOURCE_BUCKET") if not GCS_SOURCE_BUCKET else GCS_SOURCE_BUCKET
-    dest_bucket = _require_env("GCS_DEST_BUCKET") if not GCS_DEST_BUCKET else GCS_DEST_BUCKET
+    source_bucket_raw = GCS_SOURCE_BUCKET or _require_env("GCS_SOURCE_BUCKET")
+    dest_bucket_raw = GCS_DEST_BUCKET or _require_env("GCS_DEST_BUCKET")
+
+    source_bucket = _normalize_bucket_name(source_bucket_raw)
+    dest_bucket = _normalize_bucket_name(dest_bucket_raw)
+
+    # Validate that we ended up with plain bucket names
+    for label, b in ("GCS_SOURCE_BUCKET", source_bucket), ("GCS_DEST_BUCKET", dest_bucket):
+        if not b or "://" in b or "/" in b:
+            raise RuntimeError(f"{label} must be a bucket name like 'my-bucket', not a URL. Got: {b!r}")
 
     client = get_gcs_client()
 
