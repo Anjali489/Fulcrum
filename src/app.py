@@ -1,4 +1,5 @@
 import streamlit as st
+import os
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -6,6 +7,11 @@ import json
 
 # Integration: Query Parser Agent
 from agents.query_parser_agent import parse_and_complete
+
+# Configure Streamlit watcher to be more stable on Windows
+os.environ.setdefault("STREAMLIT_WATCHER_TYPE", "poll")
+os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "poll")
+os.environ.setdefault("STREAMLIT_WATCHER_IGNORE", "**/__pycache__/**,**/*.pyc")
 
 # Configure the page
 st.set_page_config(
@@ -1107,10 +1113,12 @@ def show_data_input():
     # Form fields as seen in Figma
         st.markdown("### Transport Parameters")
         
-        # Distance field
-        distance = st.text_input(
+        # Distance field (numeric)
+        distance = st.number_input(
             "Distance (km):",
-            placeholder="Enter distance in kilometers",
+            min_value=0.0,
+            value=0.0,
+            step=1.0,
             help="Total distance for transportation"
         )
         
@@ -1161,9 +1169,12 @@ def show_data_input():
         )
         
         # Reuse Potential
-        reuse_potential = st.text_input(
+        reuse_potential = st.number_input(
             "Reuse Potential (%):",
-            placeholder="Enter reuse potential percentage",
+            min_value=0,
+            max_value=100,
+            value=0,
+            step=1,
             help="Percentage of product that can be reused"
         )
         
@@ -1203,6 +1214,12 @@ def show_data_input():
         with col_btn2:
             if st.button("NEXT ➡", use_container_width=True, type="primary"):
                 # Build a minimal user_input payload for the Query Parser Agent
+                # Safe numeric conversions
+                try:
+                    dist_val = float(distance) if distance is not None else None
+                except Exception:
+                    dist_val = None
+
                 ui_payload = {
                     "metal": None if metal == "Select metal" else metal.lower(),
                     "process_route": None if process_route == "Select route" else process_route,
@@ -1210,7 +1227,7 @@ def show_data_input():
                     "system_boundary": system_boundary,
                     "transport": {
                         "mode": None if transport_mode == "Select transport mode" else transport_mode.split(" - ")[0].lower(),
-                        "distance_km": float(distance) if distance else None,
+                        "distance_km": dist_val,
                         "fuel_type": None if fuel_type == "Select fuel type" else fuel_type.lower(),
                     },
                     "product": {
@@ -1219,14 +1236,32 @@ def show_data_input():
                     },
                     "end_of_life": {
                         "recycling_rate_pct": float(recycling_rate) if recycling_rate is not None else None,
-                        "reuse_pct": float(reuse_potential) if (reuse_potential or reuse_potential == 0) else None,
+                        "reuse_pct": float(reuse_potential) if reuse_potential is not None else None,
                         # landfill_pct will be derived
                     },
                     "notes": eol_treatment or None,
                 }
 
-                # Call Query Parser Agent
-                completed, issues, prov = parse_and_complete(ui_payload)
+                # Save raw for potential fallback
+                st.session_state["last_ui_payload_raw"] = ui_payload
+
+                # Call Query Parser Agent with fallback to minimal deterministic payload
+                try:
+                    completed, issues, prov = parse_and_complete(ui_payload)
+                except Exception as e:
+                    # Minimal safe fallback to avoid blocking navigation
+                    completed = {
+                        "metal": ui_payload.get("metal") or "aluminum",
+                        "process_route": ui_payload.get("process_route") or "primary",
+                        "functional_unit": ui_payload.get("functional_unit") or {"unit": "kg", "value": 1.0},
+                        "system_boundary": ui_payload.get("system_boundary") or "Cradle-to-Grave",
+                        "energy_mix": {"renewable": 30.0, "coal": 40.0, "gas": 20.0, "oil": 5.0, "nuclear": 5.0, "other": 0.0},
+                        "transport": ui_payload.get("transport") or {"mode": "truck", "distance_km": 0.0, "fuel_type": "diesel"},
+                        "product": ui_payload.get("product") or {"lifetime_years": 10.0, "energy_consumption_kwh_year": 500.0},
+                        "end_of_life": ui_payload.get("end_of_life") or {"recycling_rate_pct": 50.0, "reuse_pct": 0.0, "landfill_pct": 50.0},
+                    }
+                    issues = [f"Parser fallback used due to error: {e}"]
+                    prov = {"fallback": "default"}
 
                 # Store in session for downstream agents
                 st.session_state["query_payload"] = completed
@@ -1263,67 +1298,63 @@ def show_lca_analysis():
         ">
         """, unsafe_allow_html=True)
         
-        # LCA Analysis form fields as seen in Figma
-        st.markdown("### LCA Parameters")
-        
-        # Metals/Materials dropdown
-        metals_materials = st.selectbox(
-            "Metals/Materials:",
-            ["Select materials", "Steel", "Aluminum", "Copper", "Plastic - PET", "Plastic - PP", "Glass", "Concrete", "Wood", "Composite Materials"],
-            help="Select the primary materials used in the product"
-        )
-        
-        # Functional units dropdown
-        functional_units = st.selectbox(
-            "Functional units:",
-            ["Select functional unit", "1 kg product", "1 piece", "1 m²", "1 m³", "1 liter", "1 year of service", "1 km transport"],
-            help="Define the functional unit for the LCA assessment"
-        )
-        
-        # System Boundary dropdown
-        system_boundary = st.selectbox(
-            "System Boundary:",
-            ["Select system boundary", "Cradle-to-Gate", "Cradle-to-Grave", "Gate-to-Gate", "Cradle-to-Cradle", "Gate-to-Grave"],
-            help="Define the scope of the life cycle assessment"
-        )
-        
-        st.markdown("### Assessment Scope")
-        
-        # Additional LCA-specific fields
-        impact_categories = st.multiselect(
-            "Impact Categories:",
-            ["Climate Change", "Ozone Depletion", "Acidification", "Eutrophication", "Land Use", "Water Use", "Resource Depletion"],
-            default=["Climate Change", "Water Use"],
-            help="Select the environmental impact categories to assess"
-        )
-        
-        allocation_method = st.selectbox(
-            "Allocation Method:",
-            ["Select allocation method", "Mass Allocation", "Economic Allocation", "Energy Allocation", "No Allocation"],
-            help="Choose the allocation method for multi-output processes"
-        )
-        
-        assessment_period = st.selectbox(
-            "Assessment Period:",
-            ["Select time period", "1 year", "5 years", "10 years", "Product lifetime", "Custom period"],
-            help="Define the time period for the assessment"
-        )
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        # Action buttons matching Figma design
-        col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
-        
-        with col_btn2:
-            if st.button("NEXT ➡", use_container_width=True, type="primary"):
-                if (metals_materials != "Select materials" and 
-                    functional_units != "Select functional unit" and 
-                    system_boundary != "Select system boundary"):
-                    st.success("✅ LCA parameters configured successfully!")
-                    st.session_state.current_page = 'Report'
-                    st.rerun()
-                else:
-                    st.error("❌ Please fill in all required LCA parameters")
+        st.markdown("### Results")
+        payload = st.session_state.get("query_payload")
+        if not payload:
+            # Attempt to rebuild from last UI payload if available
+            raw_ui = st.session_state.get("last_ui_payload_raw")
+            if raw_ui:
+                try:
+                    completed, issues, prov = parse_and_complete(raw_ui)
+                    st.session_state["query_payload"] = completed
+                    st.session_state["query_provenance"] = prov
+                    st.session_state["query_issues"] = issues
+                    payload = completed
+                    st.success("Recovered payload from last input.")
+                except Exception:
+                    pass
+        if not payload:
+            st.info("No input payload found. Go to Data Input and click NEXT to generate the payload.")
+        else:
+            from agents.lca_calculation_agent import compute_lca
+            from agents.circularity_analysis_agent import analyze_circularity
+
+            with st.spinner("Computing LCA..."):
+                lca_results, lca_issues = compute_lca(payload, store_to_gcs=True)
+            with st.spinner("Analyzing circularity..."):
+                circ_results, circ_issues = analyze_circularity(payload, lca_results, store_to_gcs=True)
+
+            # Display summaries
+            totals = lca_results.get("totals", {})
+            colA, colB, colC, colD = st.columns(4)
+            colA.metric("Emissions (kg CO₂e)", f"{totals.get('emissions_kgCO2', 0)}")
+            colB.metric("Energy (MJ)", f"{totals.get('energy_MJ', 0)}")
+            colC.metric("Water (L)", f"{totals.get('water_L', 0)}")
+            colD.metric("Waste (kg)", f"{totals.get('waste_kg', 0)}")
+
+            st.markdown("#### Circularity")
+            st.write(circ_results.get("recommendation", ""))
+            savings = circ_results.get("savings", {})
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Energy saved (MJ)", f"{savings.get('energy_MJ', 0)}")
+            c2.metric("Emissions saved (kg CO₂e)", f"{savings.get('emissions_kgCO2', 0)}")
+            c3.metric("Cost savings (USD)", f"{savings.get('cost_savings_usd', 0)}")
+
+            # Details expanders
+            with st.expander("View input payload", expanded=False):
+                st.json(payload)
+            with st.expander("LCA results (JSON)", expanded=False):
+                st.json(lca_results)
+            with st.expander("Circularity results (JSON)", expanded=False):
+                st.json(circ_results)
+
+            # Show issues
+            all_issues = []
+            all_issues.extend(st.session_state.get("query_issues") or [])
+            all_issues.extend(lca_issues or [])
+            all_issues.extend(circ_issues or [])
+            if all_issues:
+                st.warning("\n".join(all_issues))
         
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1402,105 +1433,74 @@ def show_qa_analysis():
 def show_report():
     st.markdown('<div class="content-header">📊 Recycling & Circularity Report</div>', unsafe_allow_html=True)
     st.markdown('<div class="breadcrumb">Home > Reports</div>', unsafe_allow_html=True)
-    
-    # Main layout
-    main_col1, main_col2 = st.columns([7, 3])
-    
-    with main_col1:
-        # Central section - simplified
-        st.markdown('<div style="background: white; padding: 2rem; border-radius: 16px; text-align: center;"><h3 style="color: #667eea;">Recycling & Circularity: The Metal Lifecycle</h3></div>', unsafe_allow_html=True)
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        # Process steps
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.markdown('<div style="background: white; padding: 1rem; border-radius: 8px; text-align: center; border: 2px solid #667eea;"><div style="font-size: 2rem;">📱</div><div style="color: #667eea;">Collection</div></div>', unsafe_allow_html=True)
-        with col2:
-            st.markdown('<div style="background: white; padding: 1rem; border-radius: 8px; text-align: center; border: 2px solid #667eea;"><div style="font-size: 2rem;">🏭</div><div style="color: #667eea;">Processing</div></div>', unsafe_allow_html=True)
-        with col3:
-            st.markdown('<div style="background: white; padding: 1rem; border-radius: 8px; text-align: center; border: 2px solid #667eea;"><div style="font-size: 2rem;">📦</div><div style="color: #667eea;">Production</div></div>', unsafe_allow_html=True)
-        with col4:
-            st.markdown('<div style="background: white; padding: 1rem; border-radius: 8px; text-align: center; border: 2px solid #667eea;"><div style="font-size: 2rem;">�</div><div style="color: #667eea;">Transport</div></div>', unsafe_allow_html=True)
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        # Central recycling metric
-        st.markdown('<div style="background: linear-gradient(135deg, #667eea, #764ba2); padding: 2rem; border-radius: 12px; text-align: center; color: white;"><div style="font-size: 3rem;">♻️</div><h4>Recycled Content:</h4><div style="font-size: 3rem; font-weight: bold;">75%</div><p>in new products</p></div>', unsafe_allow_html=True)
-    
-    with main_col2:
-        # CO2 Emissions Chart
-        st.markdown('<div style="background: white; padding: 1.5rem; border-radius: 12px; margin-bottom: 1rem;"><h4 style="color: #667eea; text-align: center;">CO₂ Emission Savings from Recycling</h4></div>', unsafe_allow_html=True)
-        
-        # Simple bars using metrics
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.metric("Virgin Metal", "200%", delta=None)
-        with col_b:
-            st.metric("Recycled", "80%", delta="-60%")
-        
-        st.success("→ 60% Reduction in CO₂")
-        
-        # Collection Rate
-        st.markdown('<div style="background: white; padding: 1.5rem; border-radius: 12px; margin: 1rem 0; text-align: center;"><h4 style="color: #667eea;">End-of-Life Collection Rate</h4><div style="font-size: 3rem; color: #667eea; font-weight: bold;">82%</div><div style="color: #6b7280;">Materials Collected</div><div style="color: #ef4444; font-size: 0.8rem;">18% Lost to Landfill</div></div>', unsafe_allow_html=True)
-        
-        # Resource Efficiency
-        st.markdown('<div style="background: white; padding: 1.5rem; border-radius: 12px;"><h4 style="color: #667eea; text-align: center;">Resource Efficiency Over Time</h4><div style="color: #10b981; text-align: center; font-weight: 600;">📈 Trending Upward</div></div>', unsafe_allow_html=True)
-    
-    # KPI Section - simplified and clean
-    st.markdown("<br>", unsafe_allow_html=True)
+
+    payload = st.session_state.get("query_payload")
+    from agents.lca_calculation_agent import compute_lca
+    from agents.circularity_analysis_agent import analyze_circularity
+    from agents.report_generation_agent import generate_report
+
+    if not payload:
+        st.info("No input payload found. Go to Data Input and click NEXT to generate the payload.")
+        return
+
+    with st.spinner("Computing LCA & Circularity for report..."):
+        lca_results, lca_issues = compute_lca(payload, store_to_gcs=True)
+        circ_results, circ_issues = analyze_circularity(payload, lca_results, store_to_gcs=True)
+        report, rep_issues = generate_report(payload, lca_results, circ_results, store_to_gcs=True)
+
+    # KPIs row
     st.subheader("📈 Key Performance Indicators")
-    
-    kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-    
-    with kpi_col1:
-        st.metric("🌍 Carbon Savings", "2,847 kg", "CO₂ Reduced")
-    
-    with kpi_col2:
-        st.metric("⚡ Energy Saved", "1,320 kWh", "This Month")
-    
-    with kpi_col3:
-        st.metric("♻️ Recovery Rate", "92%", "Material Recovery")
-    
-    with kpi_col4:
-        st.metric("📊 Efficiency Score", "8.6/10", "Overall Rating")
-    
-    # Data Table
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.subheader("📋 Detailed Metrics Analysis")
-    
-    # Create sample data
-    import pandas as pd
-    report_data = pd.DataFrame({
-        'Metal Type': ['Aluminum', 'Copper', 'Steel', 'Lead', 'Zinc'],
-        'Recycled Content (%)': [75, 68, 82, 91, 73],
-        'CO₂ Savings (kg)': [847, 523, 892, 341, 244],
-        'Collection Rate (%)': [82, 79, 88, 94, 76],
-        'Efficiency Score': [8.6, 7.9, 9.1, 9.4, 7.8],
-        'Status': ['✅ Optimized', '⚠️ Improving', '✅ Excellent', '✅ Excellent', '⚠️ Improving']
-    })
-    
-    st.dataframe(report_data, use_container_width=True)
-    
-    # Action Buttons
-    st.markdown("<br>", unsafe_allow_html=True)
-    action_col1, action_col2, action_col3, action_col4 = st.columns(4)
-    
-    with action_col1:
-        if st.button("📥 Download Report", key="download_report", use_container_width=True, type="primary"):
-            st.success("✅ Report downloaded successfully!")
-    
-    with action_col2:
-        if st.button("📧 Email Report", key="email_report", use_container_width=True):
-            st.info("📧 Report sent to stakeholders")
-    
-    with action_col3:
-        if st.button("📊 Export Data", key="export_data", use_container_width=True):
-            st.success("💾 Data exported to CSV")
-    
-    with action_col4:
-        if st.button("🔄 Refresh Data", key="refresh_data", use_container_width=True):
-            st.rerun()
+    totals = lca_results.get("totals", {})
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Emissions (kg CO₂e)", f"{totals.get('emissions_kgCO2', 0)}")
+    k2.metric("Energy (MJ)", f"{totals.get('energy_MJ', 0)}")
+    k3.metric("Water (L)", f"{totals.get('water_L', 0)}")
+    k4.metric("Waste (kg)", f"{totals.get('waste_kg', 0)}")
+
+    # Layout
+    main_col1, main_col2 = st.columns([7, 3])
+
+    with main_col1:
+        st.markdown("### Environmental Breakdown")
+        # Process vs Transport emissions donut-like bars using dataframe
+        bd = lca_results.get("breakdown", {})
+        df_break = pd.DataFrame([
+            {"Stage": "Process", "Emissions (kg CO₂e)": bd.get("process", {}).get("emissions_kgCO2", 0.0)},
+            {"Stage": "Transport", "Emissions (kg CO₂e)": bd.get("transport", {}).get("emissions_kgCO2", 0.0)},
+        ])
+        st.bar_chart(df_break.set_index("Stage"))
+
+        st.markdown("### Energy Mix")
+        mix = (lca_results.get("energy_mix") or payload.get("energy_mix") or {})
+        if isinstance(mix, dict) and "grid_region" not in mix:
+            df_mix = pd.DataFrame({"Share %": mix}).T
+            st.dataframe(df_mix)
+        else:
+            st.info(f"Grid region: {mix.get('grid_region', 'Unknown')} (using default factors)")
+
+        st.markdown("### Detailed JSON")
+        with st.expander("Report JSON", expanded=False):
+            st.json(report)
+
+    with main_col2:
+        st.markdown("### Circularity Summary")
+        st.write(circ_results.get("recommendation", ""))
+        sav = circ_results.get("savings", {})
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Energy saved (MJ)", f"{sav.get('energy_MJ', 0)}")
+        c2.metric("Emissions saved (kg CO₂e)", f"{sav.get('emissions_kgCO2', 0)}")
+        c3.metric("Cost savings (USD)", f"{sav.get('cost_savings_usd', 0)}")
+
+        st.markdown("### Sources")
+        st.write(report.get("sources", {}))
+
+    issues = []
+    issues.extend(st.session_state.get("query_issues") or [])
+    issues.extend(lca_issues or [])
+    issues.extend(circ_issues or [])
+    issues.extend(rep_issues or [])
+    if issues:
+        st.warning("\n".join(issues))
 
 def show_organization():
     st.markdown('<div class="content-header">Organization</div>', unsafe_allow_html=True)

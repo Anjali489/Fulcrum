@@ -1,0 +1,34 @@
+[server]
+runningWithScript = true
+headless = true
+
+[global]
+developmentMode = false
+
+[logger]
+level = "info"
+
+[theme]
+base = "light"
+
+[client]
+# Reduce file watching flakiness on Windows by using polling and ignoring __pycache__
+watchFileSystem = true
+
+[runner]
+# Polling watcher helps on Windows network/locked files
+fastReruns = true
+magicEnabled = true
+
+[browser]
+serverAddress = "localhost"
+serverPort = 8501
+
+[watcher]
+# Use polling to avoid Windows watchdog errors and ignore caches
+watcherType = "poll"
+# Ignore __pycache__ and .pyc files
+ignore = [
+  "**/__pycache__/**",
+  "**/*.pyc"
+]
